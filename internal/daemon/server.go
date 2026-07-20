@@ -26,17 +26,27 @@ var validStates = map[string]bool{
 	"off":     true,
 }
 
+const chromaRetryDelay = 16 * time.Second
+
+type chromaClient interface {
+	Connected() bool
+	SetEnter(context.Context, uint32) error
+	Heartbeat(context.Context) error
+	Close(context.Context) error
+}
+
 type Server struct {
 	version string
-	chroma  *chroma.Client
+	chroma  chromaClient
 
-	mu        sync.RWMutex
-	state     string
-	since     time.Time
-	lastError string
-	lastRGB   uint32
-	lit       bool
-	nextRetry time.Time
+	mu            sync.RWMutex
+	state         string
+	since         time.Time
+	lastError     string
+	lastErrorCode string
+	lastRGB       uint32
+	lit           bool
+	nextRetry     time.Time
 
 	stateCh chan string
 	stopCh  chan struct{}
@@ -119,13 +129,14 @@ func (s *Server) handleSet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	s.mu.RLock()
 	status := Status{
-		State:           s.state,
-		Since:           s.since,
-		ChromaConnected: s.chroma.Connected(),
-		LastError:       s.lastError,
-		Version:         s.version,
+		State:         s.state,
+		Since:         s.since,
+		LastError:     s.lastError,
+		LastErrorCode: s.lastErrorCode,
+		Version:       s.version,
 	}
 	s.mu.RUnlock()
+	status.ChromaConnected = s.chroma.Connected()
 	writeJSON(w, status)
 }
 
@@ -163,8 +174,6 @@ func (s *Server) effectLoop(ctx context.Context) {
 			s.mu.Lock()
 			s.state = state
 			s.since = since
-			s.lastError = ""
-			s.nextRetry = time.Time{}
 			s.mu.Unlock()
 			if state == "off" {
 				s.applyOff()
@@ -199,7 +208,7 @@ func (s *Server) render(state string, since, now time.Time, force bool) {
 	s.mu.RLock()
 	nextRetry := s.nextRetry
 	s.mu.RUnlock()
-	if !force && now.Before(nextRetry) {
+	if now.Before(nextRetry) {
 		return
 	}
 
@@ -244,7 +253,7 @@ func (s *Server) render(state string, since, now time.Time, force bool) {
 	err := s.chroma.SetEnter(setCtx, rgb)
 	cancel()
 	if err != nil {
-		s.setError(err)
+		s.setErrorAt(err, now)
 		return
 	}
 
@@ -252,30 +261,40 @@ func (s *Server) render(state string, since, now time.Time, force bool) {
 	s.lastRGB = rgb
 	s.lit = on
 	s.lastError = ""
+	s.lastErrorCode = ""
 	s.nextRetry = time.Time{}
 	s.mu.Unlock()
 }
 
 func (s *Server) applyOff() {
+	wasConnected := s.chroma.Connected()
 	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	err := s.chroma.Close(closeCtx)
 	cancel()
 	s.mu.Lock()
 	s.lit = false
 	s.lastRGB = 0
-	s.nextRetry = time.Time{}
 	if err != nil {
 		s.lastError = err.Error()
-	} else {
+		s.lastErrorCode = chroma.ErrorCode(err)
+		s.nextRetry = time.Now().Add(chromaRetryDelay)
+	} else if wasConnected {
 		s.lastError = ""
+		s.lastErrorCode = ""
+		s.nextRetry = time.Time{}
 	}
 	s.mu.Unlock()
 }
 
 func (s *Server) setError(err error) {
+	s.setErrorAt(err, time.Now())
+}
+
+func (s *Server) setErrorAt(err error, now time.Time) {
 	s.mu.Lock()
 	s.lastError = err.Error()
-	s.nextRetry = time.Now().Add(2 * time.Second)
+	s.lastErrorCode = chroma.ErrorCode(err)
+	s.nextRetry = now.Add(chromaRetryDelay)
 	s.mu.Unlock()
 }
 

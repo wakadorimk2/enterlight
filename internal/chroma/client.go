@@ -8,12 +8,37 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
 
 const baseURL = "http://localhost:54235/razer/chromasdk"
+
+const (
+	ErrorSessionUnreachable = "chroma_session_unreachable"
+	ErrorClientLimit        = "chroma_client_limit"
+	ErrorUnavailable        = "chroma_unavailable"
+	sessionStartupGrace     = 2500 * time.Millisecond
+	sessionStartupPoll      = 100 * time.Millisecond
+)
+
+type Error struct {
+	Code string
+	Err  error
+}
+
+func (e *Error) Error() string { return e.Err.Error() }
+func (e *Error) Unwrap() error { return e.Err }
+
+func ErrorCode(err error) string {
+	var chromaErr *Error
+	if errors.As(err, &chromaErr) {
+		return chromaErr.Code
+	}
+	return ErrorUnavailable
+}
 
 // Enter is RZKEY_ENTER (row 3, column 14) in Razer's generic 6x22 layout.
 const (
@@ -23,10 +48,13 @@ const (
 )
 
 type Client struct {
-	http    *http.Client
-	mu      sync.Mutex
-	uri     string
-	lastUse time.Time
+	http         *http.Client
+	baseURL      string
+	baseHTTPHost string
+	mu           sync.Mutex
+	uri          string
+	uriHTTPHost  string
+	lastUse      time.Time
 }
 
 type initResponse struct {
@@ -53,7 +81,15 @@ type author struct {
 }
 
 func New() *Client {
-	return &Client{http: &http.Client{Timeout: 3 * time.Second}}
+	return newClient(baseURL, &http.Client{Timeout: 3 * time.Second})
+}
+
+func newClient(baseURL string, httpClient *http.Client) *Client {
+	return &Client{
+		http:         httpClient,
+		baseURL:      normalizeLocalhost(baseURL),
+		baseHTTPHost: localhostHTTPHost(baseURL),
+	}
 }
 
 func (c *Client) Connected() bool {
@@ -80,13 +116,21 @@ func (c *Client) ensureConnectedLocked(ctx context.Context) error {
 		Category:         "application",
 	}
 	var out initResponse
-	if err := c.doJSONLocked(ctx, http.MethodPost, baseURL, payload, &out); err != nil {
-		return fmt.Errorf("initialize Razer Chroma SDK: %w", err)
+	if err := c.doJSONLocked(ctx, http.MethodPost, c.baseURL, c.baseHTTPHost, payload, &out); err != nil {
+		return classifiedError(ErrorUnavailable, "initialize Razer Chroma SDK", err)
 	}
 	if out.URI == "" {
-		return fmt.Errorf("initialize Razer Chroma SDK: no session URI returned (result=%d)", out.Result)
+		code := ErrorUnavailable
+		// Access denied and single-instance are the errors returned by known SDK
+		// versions when no additional REST client slot can be allocated.
+		if out.Result == 5 || out.Result == 1152 {
+			code = ErrorClientLimit
+		}
+		return classifiedError(code, "initialize Razer Chroma SDK", fmt.Errorf("no session URI returned (result=%d)", out.Result))
 	}
-	c.uri = strings.TrimRight(out.URI, "/")
+	rawURI := strings.TrimRight(out.URI, "/")
+	c.uri = normalizeLocalhost(rawURI)
+	c.uriHTTPHost = localhostHTTPHost(rawURI)
 	c.lastUse = time.Now()
 	return nil
 }
@@ -95,17 +139,37 @@ func (c *Client) ensureConnectedLocked(ctx context.Context) error {
 func (c *Client) SetEnter(ctx context.Context, rgb uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	newSession := c.uri == ""
 	if err := c.ensureConnectedLocked(ctx); err != nil {
 		return err
 	}
 	payload := customKeyEffect(rgb)
 	var out resultResponse
-	if err := c.doJSONLocked(ctx, http.MethodPut, c.uri+"/keyboard", payload, &out); err != nil {
+	err := c.doJSONLocked(ctx, http.MethodPut, c.uri+"/keyboard", c.uriHTTPHost, payload, &out)
+	if err != nil && newSession {
+		// Some SDK versions return the session URI before the child HTTP listener
+		// is ready. Retry the same session briefly; never allocate another one.
+		until := time.Now().Add(sessionStartupGrace)
+		for err != nil && time.Now().Before(until) {
+			timer := time.NewTimer(sessionStartupPoll)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				err = ctx.Err()
+				until = time.Time{}
+			case <-timer.C:
+				out = resultResponse{}
+				err = c.doJSONLocked(ctx, http.MethodPut, c.uri+"/keyboard", c.uriHTTPHost, payload, &out)
+			}
+		}
+	}
+	if err != nil {
 		c.uri = ""
-		return fmt.Errorf("set Enter key effect: %w", err)
+		c.uriHTTPHost = ""
+		return classifiedError(ErrorSessionUnreachable, "set Enter key effect", err)
 	}
 	if out.Result != 0 {
-		return fmt.Errorf("set Enter key effect: Chroma result=%d", out.Result)
+		return classifiedError(ErrorUnavailable, "set Enter key effect", fmt.Errorf("Chroma result=%d", out.Result))
 	}
 	c.lastUse = time.Now()
 	return nil
@@ -118,9 +182,10 @@ func (c *Client) Heartbeat(ctx context.Context) error {
 		return errors.New("not connected")
 	}
 	var out resultResponse
-	if err := c.doJSONLocked(ctx, http.MethodPut, c.uri+"/heartbeat", map[string]any{}, &out); err != nil {
+	if err := c.doJSONLocked(ctx, http.MethodPut, c.uri+"/heartbeat", c.uriHTTPHost, map[string]any{}, &out); err != nil {
 		c.uri = ""
-		return fmt.Errorf("Chroma heartbeat: %w", err)
+		c.uriHTTPHost = ""
+		return classifiedError(ErrorSessionUnreachable, "Chroma heartbeat", err)
 	}
 	c.lastUse = time.Now()
 	return nil
@@ -137,10 +202,12 @@ func (c *Client) Close(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	req.Host = c.uriHTTPHost
 	resp, err := c.http.Do(req)
 	c.uri = ""
+	c.uriHTTPHost = ""
 	if err != nil {
-		return err
+		return classifiedError(ErrorSessionUnreachable, "close Chroma session", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -150,10 +217,11 @@ func (c *Client) Close(ctx context.Context) error {
 }
 
 func (c *Client) Version(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL, nil)
 	if err != nil {
 		return "", err
 	}
+	req.Host = c.baseHTTPHost
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", err
@@ -169,7 +237,40 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(body)), nil
 }
 
-func (c *Client) doJSONLocked(ctx context.Context, method, url string, payload, out any) error {
+func classifiedError(code, operation string, err error) error {
+	return &Error{Code: code, Err: fmt.Errorf("%s: %w", operation, err)}
+}
+
+// normalizeLocalhost forces only the localhost hostname to IPv4. Chroma REST
+// sessions listen on IPv4 on affected SDK versions even when Windows resolves
+// localhost to ::1 first.
+func normalizeLocalhost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || !strings.EqualFold(u.Hostname(), "localhost") {
+		return raw
+	}
+	port := u.Port()
+	u.Host = "127.0.0.1"
+	if port != "" {
+		u.Host += ":" + port
+	}
+	return u.String()
+}
+
+// localhostHTTPHost preserves the HTTP.sys URL registration while the request
+// itself connects to the normalized IPv4 address.
+func localhostHTTPHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(u.Hostname(), "localhost") {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		return "localhost:" + port
+	}
+	return "localhost"
+}
+
+func (c *Client) doJSONLocked(ctx context.Context, method, url, httpHost string, payload, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -178,6 +279,7 @@ func (c *Client) doJSONLocked(ctx context.Context, method, url string, payload, 
 	if err != nil {
 		return err
 	}
+	req.Host = httpHost
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {

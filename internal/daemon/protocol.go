@@ -13,5 +13,6 @@ type Status struct {
 	Since           time.Time `json:"since"`
 	ChromaConnected bool      `json:"chromaConnected"`
 	LastError       string    `json:"lastError,omitempty"`
+	LastErrorCode   string    `json:"lastErrorCode,omitempty"`
 	Version         string    `json:"version"`
 }
