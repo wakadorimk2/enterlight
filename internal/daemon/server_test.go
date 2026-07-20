@@ -235,3 +235,38 @@ func TestApprovalLeaseAndDoneSessionExpire(t *testing.T) {
 		t.Fatalf("state = %q, want off", s.state)
 	}
 }
+
+func TestConcurrentApprovalAdaptersFailClosed(t *testing.T) {
+	s := NewServer("test")
+	body := func(session string) *http.Request {
+		return httptest.NewRequest(http.MethodPost, "/approval", strings.NewReader(`{"sessionId":"`+session+`","candidates":[{"key":1,"decision":"allow_once"}],"selectedKey":1,"leaseMs":5000}`))
+	}
+	first := httptest.NewRecorder()
+	s.handleApproval(first, body("adapter-a"))
+	if first.Code != http.StatusOK || s.approval == nil {
+		t.Fatalf("first update: status=%d approval=%#v", first.Code, s.approval)
+	}
+
+	second := httptest.NewRecorder()
+	s.handleApproval(second, body("adapter-b"))
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status = %d, want 409", second.Code)
+	}
+	if s.approval != nil {
+		t.Fatal("conflicting adapters left an overlay active")
+	}
+
+	// Neither contender may win merely by renewing while both leases live.
+	renew := httptest.NewRecorder()
+	s.handleApproval(renew, body("adapter-a"))
+	if renew.Code != http.StatusConflict || s.approval != nil {
+		t.Fatalf("renew status=%d approval=%#v", renew.Code, s.approval)
+	}
+
+	s.clearApproval("adapter-b")
+	renew = httptest.NewRecorder()
+	s.handleApproval(renew, body("adapter-a"))
+	if renew.Code != http.StatusOK || s.approval == nil {
+		t.Fatalf("post-clear renew status=%d approval=%#v", renew.Code, s.approval)
+	}
+}

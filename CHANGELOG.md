@@ -7,6 +7,9 @@
 - Add persistent calm, vivid, and max presentation presets.
 - Add fail-closed approval candidate lighting with a short renewable lease.
 - Preserve Codex session IDs from lifecycle hook payloads.
+- Add a WSL2 PTY adapter for Codex CLI 0.144.6 approval candidates in the VS Code integrated terminal.
+- Add managed WSL install/uninstall scripts and a Linux amd64 release artifact without changing shell or Codex settings.
+- Fail closed when concurrent adapter sessions, unknown prompt text, or incomplete terminal snapshots make approval lighting ambiguous.
 
 ## v0.1.0 — 2026-07-20
 

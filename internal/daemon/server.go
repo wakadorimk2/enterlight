@@ -71,19 +71,20 @@ type Server struct {
 	version string
 	chroma  chromaClient
 
-	mu            sync.RWMutex
-	state         string
-	since         time.Time
-	sessions      map[string]*sessionState
-	approval      *approvalState
-	preset        string
-	configError   string
-	lastError     string
-	lastErrorCode string
-	nextRetry     time.Time
-	lastFrame     chroma.Frame
-	hasFrame      bool
-	lastRender    time.Time
+	mu             sync.RWMutex
+	state          string
+	since          time.Time
+	sessions       map[string]*sessionState
+	approval       *approvalState
+	approvalLeases map[string]time.Time
+	preset         string
+	configError    string
+	lastError      string
+	lastErrorCode  string
+	nextRetry      time.Time
+	lastFrame      chroma.Frame
+	hasFrame       bool
+	lastRender     time.Time
 
 	wakeCh chan struct{}
 	stopCh chan struct{}
@@ -96,15 +97,16 @@ func NewServer(version string) *Server {
 		configError = cfgErr.Error()
 	}
 	return &Server{
-		version:     version,
-		chroma:      chroma.New(),
-		state:       "off",
-		since:       time.Now(),
-		sessions:    make(map[string]*sessionState),
-		preset:      cfg.Preset,
-		configError: configError,
-		wakeCh:      make(chan struct{}, 1),
-		stopCh:      make(chan struct{}),
+		version:        version,
+		chroma:         chroma.New(),
+		state:          "off",
+		since:          time.Now(),
+		sessions:       make(map[string]*sessionState),
+		approvalLeases: make(map[string]time.Time),
+		preset:         cfg.Preset,
+		configError:    configError,
+		wakeCh:         make(chan struct{}, 1),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -204,9 +206,24 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	s.approval = approval
+	for id, expiresAt := range s.approvalLeases {
+		if !time.Now().Before(expiresAt) {
+			delete(s.approvalLeases, id)
+		}
+	}
+	s.approvalLeases[approval.SessionID] = approval.ExpiresAt
+	conflict := len(s.approvalLeases) > 1
+	if conflict {
+		s.approval = nil
+	} else {
+		s.approval = approval
+	}
 	s.mu.Unlock()
 	s.wake()
+	if conflict {
+		http.Error(w, "another approval adapter session is active", http.StatusConflict)
+		return
+	}
 	writeJSON(w, map[string]any{"ok": true, "sessionId": approval.SessionID, "expiresAt": approval.ExpiresAt})
 }
 
@@ -322,6 +339,7 @@ func (s *Server) updateSession(req SetRequest, now time.Time) error {
 	s.since = now
 	if state == "off" {
 		delete(s.sessions, id)
+		delete(s.approvalLeases, id)
 		if s.approval != nil && s.approval.SessionID == id {
 			s.approval = nil
 		}
@@ -342,6 +360,9 @@ func (s *Server) updateSession(req SetRequest, now time.Time) error {
 	}
 	if state != "waiting" && s.approval != nil && s.approval.SessionID == id {
 		s.approval = nil
+	}
+	if state != "waiting" {
+		delete(s.approvalLeases, id)
 	}
 	s.mu.Unlock()
 	s.wake()
@@ -406,6 +427,11 @@ func validatedApproval(req ApprovalRequest, now time.Time) (*approvalState, erro
 
 func (s *Server) clearApproval(sessionID string) {
 	s.mu.Lock()
+	if sessionID == "" {
+		clear(s.approvalLeases)
+	} else {
+		delete(s.approvalLeases, sessionID)
+	}
 	if s.approval != nil && (sessionID == "" || s.approval.SessionID == sessionID) {
 		s.approval = nil
 	}
@@ -494,6 +520,7 @@ func (s *Server) snapshot(now time.Time) ([]sessionState, *approvalState) {
 	for id, session := range s.sessions {
 		if session.State == "done" && now.Sub(session.Since) >= doneDuration {
 			delete(s.sessions, id)
+			delete(s.approvalLeases, id)
 			if s.approval != nil && s.approval.SessionID == id {
 				s.approval = nil
 			}
@@ -505,6 +532,11 @@ func (s *Server) snapshot(now time.Time) ([]sessionState, *approvalState) {
 	}
 	if s.approval != nil && !now.Before(s.approval.ExpiresAt) {
 		s.approval = nil
+	}
+	for id, expiresAt := range s.approvalLeases {
+		if !now.Before(expiresAt) {
+			delete(s.approvalLeases, id)
+		}
 	}
 	sessions := make([]sessionState, 0, len(s.sessions))
 	for _, session := range s.sessions {

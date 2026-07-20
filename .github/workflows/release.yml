@@ -17,9 +17,18 @@ jobs:
           - goos: windows
             goarch: amd64
             ext: .exe
+            command: enterlight
+            ldflags: -s -w -X main.version=${GITHUB_REF_NAME}
           - goos: windows
             goarch: arm64
             ext: .exe
+            command: enterlight
+            ldflags: -s -w -X main.version=${GITHUB_REF_NAME}
+          - goos: linux
+            goarch: amd64
+            ext: ""
+            command: enterlight-wsl
+            ldflags: -s -w
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -33,9 +42,12 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+          go build -trimpath -ldflags "${{ matrix.ldflags }}" \
             -o "dist/enterlight-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" \
-            ./cmd/enterlight
+            "./cmd/${{ matrix.command }}"
+      - name: Add WSL installer scripts
+        if: matrix.goos == 'linux'
+        run: cp scripts/install-wsl.sh scripts/uninstall-wsl.sh dist/
       - uses: actions/upload-artifact@v4
         with:
           name: enterlight-${{ matrix.goos }}-${{ matrix.goarch }}
