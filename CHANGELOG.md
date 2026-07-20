@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.2.0 — 2026-07-20
+
 - Animate full-keyboard working, waiting, completed, error, and visibility-aware idle scenes.
 - Compose the four most recently active sessions as horizontal lanes.
 - Add persistent calm, vivid, and max presentation presets.
