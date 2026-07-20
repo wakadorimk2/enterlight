@@ -1,3 +1,9 @@
+# Next release
+
+Enterlight can now use the whole keyboard as an animated Codex status surface. Concurrent sessions occupy up to four horizontal lanes, and calm, vivid, and max presets vary the presentation without changing state meanings.
+
+An explicit local adapter API can light verified approval candidates on number keys and preview the current selection on Enter. The overlay fails closed and expires unless refreshed; Enterlight itself never observes keyboard input. Codex App, CLI, and IDE candidate-discovery adapters remain future work.
+
 # Enterlight v0.1.0
 
 Your Razer keyboard's Enter key is now a status light for Codex.
