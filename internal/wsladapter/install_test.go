@@ -85,6 +85,16 @@ func TestInstallAndUninstallScripts(t *testing.T) {
 	if !strings.Contains(string(data), "keep-me") {
 		t.Fatal("existing shim was modified")
 	}
+
+	if err := os.Remove(shim); err != nil {
+		t.Fatal(err)
+	}
+	wrongOrderEnv := append(os.Environ(), "HOME="+home, "WSL_INTEROP=/run/WSL/1_interop", "PATH="+fakeBin+":"+localBin+":"+os.Getenv("PATH"))
+	cmd = exec.Command("bash", installScript, "--helper", helperPath, "--windows-exe", windowsPath)
+	cmd.Env = wrongOrderEnv
+	if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "managed shim would not run") {
+		t.Fatalf("PATH precedence was not rejected: err=%v output=%s", err, output)
+	}
 }
 
 func writeExecutable(t *testing.T, path, content string) {

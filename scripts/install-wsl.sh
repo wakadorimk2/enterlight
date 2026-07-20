@@ -43,6 +43,20 @@ case ":$PATH:" in
     ;;
 esac
 
+path_precedes() {
+  local earlier="$1"
+  local later="$2"
+  local entry
+  local -a entries
+  IFS=: read -r -a entries <<<"$PATH"
+  for entry in "${entries[@]}"; do
+    [[ -n "$entry" ]] || entry="."
+    [[ "$entry" == "$earlier" ]] && return 0
+    [[ "$entry" == "$later" ]] && return 1
+  done
+  return 1
+}
+
 shim_path="$bin_dir/codex"
 marker="# Managed by Enterlight WSL approval adapter"
 if [[ -e "$shim_path" || -L "$shim_path" ]]; then
@@ -55,6 +69,12 @@ fi
 codex_path="$(command -v codex || true)"
 if [[ -z "$codex_path" ]]; then
   echo "Codex CLI was not found on PATH." >&2
+  exit 1
+fi
+codex_command_dir="$(dirname -- "$codex_path")"
+if [[ "$codex_command_dir" != "$bin_dir" ]] && ! path_precedes "$bin_dir" "$codex_command_dir"; then
+  echo "$bin_dir appears after $codex_command_dir on PATH, so the managed shim would not run." >&2
+  echo "Move $bin_dir before $codex_command_dir in your shell configuration, restart the shell, then rerun this installer." >&2
   exit 1
 fi
 codex_path="$(readlink -f -- "$codex_path")"
