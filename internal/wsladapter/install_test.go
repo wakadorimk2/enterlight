@@ -34,7 +34,7 @@ func TestInstallAndUninstallScripts(t *testing.T) {
 	_, testFile, _, _ := runtime.Caller(0)
 	installScript := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", "..", "scripts", "install-wsl.sh"))
 	uninstallScript := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", "..", "scripts", "uninstall-wsl.sh"))
-	env := append(os.Environ(), "HOME="+home, "WSL_INTEROP=/run/WSL/1_interop", "PATH="+localBin+":"+fakeBin+":"+os.Getenv("PATH"))
+	env := append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME=", "WSL_INTEROP=/run/WSL/1_interop", "PATH="+localBin+":"+fakeBin+":"+os.Getenv("PATH"))
 
 	cmd := exec.Command("bash", installScript, "--helper", helperPath, "--windows-exe", windowsPath)
 	cmd.Env = env
@@ -89,7 +89,7 @@ func TestInstallAndUninstallScripts(t *testing.T) {
 	if err := os.Remove(shim); err != nil {
 		t.Fatal(err)
 	}
-	wrongOrderEnv := append(os.Environ(), "HOME="+home, "WSL_INTEROP=/run/WSL/1_interop", "PATH="+fakeBin+":"+localBin+":"+os.Getenv("PATH"))
+	wrongOrderEnv := append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME=", "WSL_INTEROP=/run/WSL/1_interop", "PATH="+fakeBin+":"+localBin+":"+os.Getenv("PATH"))
 	cmd = exec.Command("bash", installScript, "--helper", helperPath, "--windows-exe", windowsPath)
 	cmd.Env = wrongOrderEnv
 	if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "managed shim would not run") {
