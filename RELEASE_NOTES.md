@@ -1,8 +1,10 @@
-# Next release
+# Enterlight v0.2.0
 
 Enterlight can now use the whole keyboard as an animated Codex status surface. Concurrent sessions occupy up to four horizontal lanes, and calm, vivid, and max presets vary the presentation without changing state meanings.
 
-An explicit local adapter API can light verified approval candidates on number keys and preview the current selection on Enter. The overlay fails closed and expires unless refreshed; Enterlight itself never observes keyboard input. Codex App, CLI, and IDE candidate-discovery adapters remain future work.
+An explicit local adapter API can light verified approval candidates on number keys and preview the current selection on Enter. The overlay fails closed and expires unless refreshed; Enterlight itself never observes keyboard input.
+
+This release also adds a WSL2 adapter for Codex CLI 0.144.6 in VS Code's integrated terminal. It recognizes only verified approval candidates, forwards raw input without parsing or logging it, and fails closed when the terminal state is ambiguous. The Linux amd64 helper and managed WSL install/uninstall scripts are included in the release.
 
 # Enterlight v0.1.0
 
