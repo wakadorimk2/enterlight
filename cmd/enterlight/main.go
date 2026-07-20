@@ -119,24 +119,54 @@ func setState(state string, quiet bool) error {
 }
 
 func doctor() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	sdkCtx, sdkCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	c := chroma.New()
-	v, err := c.Version(ctx)
-	if err != nil {
+	v, sdkErr := c.Version(sdkCtx)
+	sdkCancel()
+	if sdkErr != nil {
 		fmt.Println("Razer Chroma SDK: unavailable")
 		fmt.Println("  Make sure Razer Synapse and Chroma Connect/SDK Service are installed and running.")
-		return err
+	} else {
+		fmt.Println("Razer Chroma SDK: available")
+		fmt.Println("Version response:", v)
 	}
-	fmt.Println("Razer Chroma SDK: available")
-	fmt.Println("Version response:", v)
-	status, err := daemon.GetStatus(ctx)
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	status, err := daemon.GetStatus(statusCtx)
+	statusCancel()
 	if err != nil {
 		fmt.Println("Enterlight daemon: stopped (it will auto-start on first state command)")
 	} else {
 		fmt.Printf("Enterlight daemon: running, state=%s, connected=%v\n", status.State, status.ChromaConnected)
+		if status.LastError != "" {
+			fmt.Printf("Last error: %s\n", status.LastError)
+			for _, line := range recoveryAdvice(status.LastErrorCode) {
+				fmt.Println(" ", line)
+			}
+		}
 	}
-	return nil
+	return sdkErr
+}
+
+func recoveryAdvice(code string) []string {
+	switch code {
+	case chroma.ErrorSessionUnreachable:
+		return []string{
+			"The SDK returned a session that Enterlight could not reach.",
+			"Stop the daemon, wait at least 15 seconds, then try a state command again.",
+		}
+	case chroma.ErrorClientLimit:
+		return []string{
+			"The Chroma REST client limit appears to be full.",
+			"Stop the daemon and wait at least 15 seconds for old sessions to expire.",
+			"Only if that does not help, restart Synapse or the Razer Chroma SDK Service.",
+		}
+	case chroma.ErrorUnavailable:
+		return []string{
+			"Check that Razer Synapse and the Razer Chroma SDK Service are running.",
+		}
+	default:
+		return []string{"Run 'enterlight stop-daemon', wait at least 15 seconds, and try again."}
+	}
 }
 
 func printHelp() {

@@ -70,6 +70,22 @@ Enterlight is a dependency-free Go executable. A tiny local daemon listens only 
 
 Razer's REST session is released for `off`, rather than leaving a `CHROMA_NONE` effect active, so Synapse can take control again.
 
+## Troubleshooting
+
+Run `enterlight doctor` to see the daemon's last Chroma error and a recovery suggestion.
+
+If commands succeed and `status` reports `"chromaConnected": true` but the keyboard stays dark, check the keyboard's brightness in Synapse. A zero-brightness or battery-saving setting can suppress Chroma SDK effects even though the SDK reports success. Wireless keyboards may behave differently while charging, on USB, or on battery power.
+
+If it reports `chroma_client_limit`, let old Chroma REST sessions expire before restarting any Razer software:
+
+```powershell
+enterlight stop-daemon
+Start-Sleep -Seconds 15
+enterlight working
+```
+
+If the client limit remains after waiting, restart Razer Synapse or the **Razer Chroma SDK Service** once, then run `enterlight working` again. Enterlight never stops or restarts Razer services automatically.
+
 ## Limitations
 
 - Windows and Razer Chroma only in v0.1.
