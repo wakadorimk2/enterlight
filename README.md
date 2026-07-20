@@ -56,6 +56,32 @@ To remove only Enterlight's handlers:
 enterlight uninstall-codex
 ```
 
+## WSL2 Codex CLI approval adapter
+
+The WSL adapter supports **Codex CLI 0.144.6 running in WSL2 inside the VS Code integrated terminal**. It keeps the normal launch command (`codex [args...]`) while reflecting numbered approval choices on the matching number keys and the currently selected choice on Enter.
+
+Install the Windows release first and make `enterlight.exe` available to WSL. Then download `enterlight-linux-amd64` plus `scripts/install-wsl.sh` from this repository or the release, and run in WSL2:
+
+```bash
+chmod +x enterlight-linux-amd64 install-wsl.sh
+./install-wsl.sh \
+  --helper "$PWD/enterlight-linux-amd64" \
+  --windows-exe /mnt/c/path/to/enterlight.exe
+codex --version
+```
+
+The installer resolves and records the existing Codex executable before installing a managed `~/.local/bin/codex` shim. It stops without changing anything if `~/.local/bin` is not already on `PATH`, Codex is not exactly version 0.144.6, the shim path contains a non-Enterlight file, either executable cannot be resolved, or the paths would recurse. It does not edit shell startup files or Codex settings.
+
+To uninstall only the WSL helper, shim, and recorded executable paths:
+
+```bash
+./uninstall-wsl.sh
+```
+
+The adapter forwards the terminal PTY, arguments, environment, working directory, terminal resize, signals, and exit status. Raw input is forwarded immediately and is never parsed or logged. Output tracking retains only rows that can still match the approval title and fixed 0.144.6 candidate allowlist; it does not save terminal history, commands, conversations, or typed text.
+
+The overlay fails closed (clears) for unknown UI text or Codex versions, dynamic command-prefix choices, duplicate or out-of-range numbers, missing or multiple selections, multiple simultaneous prompts, Windows bridge failure, lease expiry, or overlap with a different wrapper session. A visible valid prompt renews the existing five-second lease; prompt dismissal, cancellation, and CLI exit clear it.
+
 ## Manual CLI
 
 ```powershell
@@ -128,10 +154,11 @@ If the client limit remains after waiting, restart Razer Synapse or the **Razer 
 
 ## Limitations
 
-- Windows and Razer Chroma only in v0.1.
+- Razer Chroma rendering still runs on Windows; the Linux helper reaches that Windows process through WSL interop.
 - Chroma custom effects take over the keyboard while active.
 - Codex hooks are experimental and require explicit trust in `/hooks`.
-- Approval candidate discovery and cursor tracking require a separate, surface-specific adapter. Unsupported or ambiguous App, CLI, and IDE prompts remain on the generic waiting scene.
+- Approval discovery supports only Codex CLI 0.144.6 in WSL2's VS Code integrated terminal. Codex App, IDE extension WebViews, ordinary Windows Terminal sessions, and idle-panel visibility detection are outside this adapter's scope.
+- Unsupported or ambiguous approval prompts remain on the generic waiting scene.
 - Hardware behavior can differ by keyboard firmware and Synapse version. Please report the exact model and layout with bugs.
 
 ## Development
@@ -139,6 +166,8 @@ If the client limit remains after waiting, restart Razer Synapse or the **Razer 
 ```bash
 go test ./...
 go build ./cmd/enterlight
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+  -o dist/enterlight-linux-amd64 ./cmd/enterlight-wsl
 ```
 
 Build a Windows binary from any Go host:
