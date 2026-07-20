@@ -23,7 +23,9 @@ func TestRGBToColorRef(t *testing.T) {
 }
 
 func TestCustomKeyEffectOnlyLightsEnter(t *testing.T) {
-	effect := customKeyEffect(0x3B82F6)
+	var frame Frame
+	frame.Keys[EnterRow][EnterCol] = 0x3B82F6
+	effect := customKeyEffect(frame)
 	if effect.Effect != "CHROMA_CUSTOM_KEY" {
 		t.Fatalf("unexpected effect: %s", effect.Effect)
 	}
@@ -32,7 +34,7 @@ func TestCustomKeyEffectOnlyLightsEnter(t *testing.T) {
 		for c, v := range effect.Param.Key[r] {
 			if v != 0 {
 				nonzero++
-				if r != enterRow || c != enterCol {
+				if r != EnterRow || c != EnterCol {
 					t.Fatalf("unexpected lit key at %d,%d", r, c)
 				}
 			}
@@ -40,6 +42,19 @@ func TestCustomKeyEffectOnlyLightsEnter(t *testing.T) {
 	}
 	if nonzero != 1 {
 		t.Fatalf("got %d lit keys, want 1", nonzero)
+	}
+}
+
+func TestCustomKeyEffectConvertsGridAndKeyColors(t *testing.T) {
+	var frame Frame
+	frame.Colors[2][5] = 0x123456
+	frame.Keys[1][2] = 0xABCDEF
+	effect := customKeyEffect(frame)
+	if got := effect.Param.Color[2][5]; got != 0x563412 {
+		t.Fatalf("grid color = %#x, want %#x", got, uint32(0x563412))
+	}
+	if got := effect.Param.Key[1][2]; got != keyMask|0xEFCDAB {
+		t.Fatalf("key color = %#x, want %#x", got, uint32(keyMask|0xEFCDAB))
 	}
 }
 

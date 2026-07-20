@@ -1,16 +1,17 @@
 # Enterlight
 
-Turn the **Enter key** on a Razer Chroma keyboard into a tiny status beacon for Codex and other coding agents.
+Turn a Razer Chroma keyboard into an animated status surface for Codex and other coding agents.
 
 ```text
-working  → blue, solid
-waiting  → amber, breathing
-done     → green, three pulses, then restore Synapse
-error    → red, blinking
+working  → cyan/purple wave
+waiting  → amber breathing
+done     → green/white completion burst
+error    → red/orange warning
+idle     → dim ambient drift while its panel is visible
 off      → release Chroma and restore the normal Synapse profile
 ```
 
-The rest of the keyboard is dark while an Enterlight state is active. `off` and the end of `done` release the Chroma session so Razer Synapse can restore your usual lighting profile.
+Up to four active sessions are composed as horizontal lanes. Active scenes remain lit across application switches; idle scenes require an explicit panel-visibility signal. `off`, or the end of the last `done` scene, releases the Chroma session so Razer Synapse can restore your usual lighting profile.
 
 ## Requirements
 
@@ -28,6 +29,7 @@ Then run:
 enterlight doctor
 enterlight waiting
 enterlight done
+enterlight preset calm
 ```
 
 The background daemon starts automatically on the first state command.
@@ -46,6 +48,8 @@ Restart Codex, open `/hooks`, review the new hooks, and trust them. Enterlight m
 - `PermissionRequest` → `waiting`
 - `Stop` → `done`
 
+The hook payload's Codex `session_id` keeps concurrent sessions in separate lanes. The `PermissionRequest` hook marks a session as waiting, but it does not guess which approval choices are visible. Decision-specific key lighting is enabled only through the explicit adapter API below.
+
 To remove only Enterlight's handlers:
 
 ```powershell
@@ -59,14 +63,50 @@ enterlight working
 enterlight waiting
 enterlight done
 enterlight error
+enterlight idle
 enterlight off
+enterlight preset vivid
+enterlight session my-agent working
+enterlight visible my-agent true
 enterlight status
 enterlight stop-daemon
 ```
 
+Presentation presets preserve the same state meanings while changing brightness and speed:
+
+- `calm` (default): 35% brightness, slow motion
+- `vivid`: 70% brightness, medium motion
+- `max`: 100% brightness, fast motion
+
+The selected preset is stored in the user's Enterlight config directory and survives daemon restarts.
+
+## Approval adapter API
+
+Surface-specific adapters can provide a verified candidate list and current selection. Enterlight maps candidates to number keys and previews the selected decision on Enter:
+
+```powershell
+enterlight approval set `
+  --session my-agent `
+  --selected 2 `
+  --candidate 1=allow_once `
+  --candidate 2=allow_session `
+  --candidate 3=decline `
+  --candidate 4=cancel
+```
+
+The decision colors are blue for `allow_once`, green for `allow_session`, orange for `decline`, and red for `cancel`. Clear the overlay when the prompt closes:
+
+```powershell
+enterlight approval clear --session my-agent
+```
+
+The same operations are available to local adapters at `127.0.0.1:47812` through `POST /sessions/update`, `POST /sessions/visibility`, `POST /approval`, `DELETE /approval`, and `POST /preset`. Approval overlays expire after five seconds unless refreshed; `leaseMs` may be set from 500 through 10000 milliseconds. Invalid candidates, duplicate or out-of-range keys, unknown decisions, and invalid selections clear the matching overlay instead of guessing.
+
+This API accepts only session metadata, decision enums, number-key positions, and visibility. Enterlight does not observe, collect, store, block, remap, or delay keyboard input.
+
 ## How it works
 
-Enterlight is a dependency-free Go executable. A tiny local daemon listens only on `127.0.0.1:47812`, maintains the Razer Chroma REST session and heartbeat, and renders a `CHROMA_CUSTOM_KEY` effect at `RZKEY_ENTER` (`0x030E`). CLI calls and Codex hooks only send a small local state update, so they return immediately.
+Enterlight is a dependency-free Go executable. A tiny local daemon listens only on `127.0.0.1:47812`, maintains the Razer Chroma REST session and heartbeat, and renders `CHROMA_CUSTOM_KEY` frames on Razer's generic 6-row × 22-column grid. CLI calls and Codex hooks only send small local state updates, so they return immediately.
 
 Razer's REST session is released for `off`, rather than leaving a `CHROMA_NONE` effect active, so Synapse can take control again.
 
@@ -89,8 +129,9 @@ If the client limit remains after waiting, restart Razer Synapse or the **Razer 
 ## Limitations
 
 - Windows and Razer Chroma only in v0.1.
-- Chroma custom effects take over the keyboard while active; Enterlight intentionally renders every key except Enter as black.
+- Chroma custom effects take over the keyboard while active.
 - Codex hooks are experimental and require explicit trust in `/hooks`.
+- Approval candidate discovery and cursor tracking require a separate, surface-specific adapter. Unsupported or ambiguous App, CLI, and IDE prompts remain on the generic waiting scene.
 - Hardware behavior can differ by keyboard firmware and Synapse version. Please report the exact model and layout with bugs.
 
 ## Development

@@ -40,12 +40,23 @@ func ErrorCode(err error) string {
 	return ErrorUnavailable
 }
 
-// Enter is RZKEY_ENTER (row 3, column 14) in Razer's generic 6x22 layout.
 const (
-	enterRow = 3
-	enterCol = 14
+	Rows     = 6
+	Columns  = 22
+	EnterRow = 3
+	EnterCol = 14
 	keyMask  = 0x01000000
 )
+
+// Matrix stores colors as 0xRRGGBB on Razer's generic 6x22 keyboard grid.
+type Matrix [Rows][Columns]uint32
+
+// Frame contains the base grid and optional virtual-key color overrides.
+// A zero Keys entry means that no override is applied at that coordinate.
+type Frame struct {
+	Colors Matrix
+	Keys   Matrix
+}
 
 type Client struct {
 	http         *http.Client
@@ -110,7 +121,7 @@ func (c *Client) ensureConnectedLocked(ctx context.Context) error {
 	}
 	payload := appInfo{
 		Title:            "Enterlight",
-		Description:      "A tiny status light for coding agents, rendered on the Enter key.",
+		Description:      "Animated keyboard status lighting for coding agents.",
 		Author:           author{Name: "wakadorimk2", Contact: "https://github.com/wakadorimk2/enterlight"},
 		DevicesSupported: []string{"keyboard"},
 		Category:         "application",
@@ -135,15 +146,15 @@ func (c *Client) ensureConnectedLocked(ctx context.Context) error {
 	return nil
 }
 
-// SetEnter sets a CHROMA_CUSTOM_KEY effect with only the Enter key lit.
-func (c *Client) SetEnter(ctx context.Context, rgb uint32) error {
+// SetKeyboard renders a complete CHROMA_CUSTOM_KEY keyboard frame.
+func (c *Client) SetKeyboard(ctx context.Context, frame Frame) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	newSession := c.uri == ""
 	if err := c.ensureConnectedLocked(ctx); err != nil {
 		return err
 	}
-	payload := customKeyEffect(rgb)
+	payload := customKeyEffect(frame)
 	var out resultResponse
 	err := c.doJSONLocked(ctx, http.MethodPut, c.uri+"/keyboard", c.uriHTTPHost, payload, &out)
 	if err != nil && newSession {
@@ -166,13 +177,20 @@ func (c *Client) SetEnter(ctx context.Context, rgb uint32) error {
 	if err != nil {
 		c.uri = ""
 		c.uriHTTPHost = ""
-		return classifiedError(ErrorSessionUnreachable, "set Enter key effect", err)
+		return classifiedError(ErrorSessionUnreachable, "set keyboard effect", err)
 	}
 	if out.Result != 0 {
-		return classifiedError(ErrorUnavailable, "set Enter key effect", fmt.Errorf("Chroma result=%d", out.Result))
+		return classifiedError(ErrorUnavailable, "set keyboard effect", fmt.Errorf("Chroma result=%d", out.Result))
 	}
 	c.lastUse = time.Now()
 	return nil
+}
+
+// SetEnter is retained for callers that only need the original status beacon.
+func (c *Client) SetEnter(ctx context.Context, rgb uint32) error {
+	var frame Frame
+	frame.Keys[EnterRow][EnterCol] = rgb
+	return c.SetKeyboard(ctx, frame)
 }
 
 func (c *Client) Heartbeat(ctx context.Context) error {
@@ -308,26 +326,25 @@ type effectPayload struct {
 }
 
 type customKeyParams struct {
-	Color [][]uint32 `json:"color"`
-	Key   [][]uint32 `json:"key"`
+	Color Matrix `json:"color"`
+	Key   Matrix `json:"key"`
 }
 
-func customKeyEffect(rgb uint32) effectPayload {
-	color := zeroMatrix(6, 22)
-	key := zeroMatrix(6, 22)
-	key[enterRow][enterCol] = keyMask | rgbToColorRef(rgb)
+func customKeyEffect(frame Frame) effectPayload {
+	var color Matrix
+	var key Matrix
+	for row := 0; row < Rows; row++ {
+		for col := 0; col < Columns; col++ {
+			color[row][col] = rgbToColorRef(frame.Colors[row][col])
+			if frame.Keys[row][col] != 0 {
+				key[row][col] = keyMask | rgbToColorRef(frame.Keys[row][col])
+			}
+		}
+	}
 	return effectPayload{
 		Effect: "CHROMA_CUSTOM_KEY",
 		Param:  customKeyParams{Color: color, Key: key},
 	}
-}
-
-func zeroMatrix(rows, cols int) [][]uint32 {
-	m := make([][]uint32, rows)
-	for i := range m {
-		m[i] = make([]uint32, cols)
-	}
-	return m
 }
 
 // rgbToColorRef converts 0xRRGGBB to Windows COLORREF (0x00BBGGRR).

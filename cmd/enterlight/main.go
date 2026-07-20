@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/wakadorimk2/enterlight/internal/chroma"
 	"github.com/wakadorimk2/enterlight/internal/codex"
+	enterconfig "github.com/wakadorimk2/enterlight/internal/config"
 	"github.com/wakadorimk2/enterlight/internal/daemon"
 )
 
@@ -84,16 +86,52 @@ func run(args []string) error {
 		if len(args) < 2 {
 			return errors.New("usage: enterlight codex-hook <working|waiting|done|error|off>")
 		}
-		// Codex sends lifecycle JSON on stdin. Drain it so the hook pipe closes cleanly;
-		// the selected lifecycle event is all Enterlight needs for v0.1.
-		_, _ = io.Copy(io.Discard, io.LimitReader(os.Stdin, 1<<20))
-		return setState(args[1], true)
+		data, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+		var input struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(data, &input)
+		if input.SessionID == "" {
+			input.SessionID = "codex"
+		}
+		return setSessionState(input.SessionID, args[1], nil, true)
 	case "set":
 		if len(args) < 2 {
 			return errors.New("usage: enterlight set <working|waiting|done|error|off>")
 		}
 		return setState(args[1], false)
-	case "working", "waiting", "done", "error", "off":
+	case "session":
+		if len(args) != 3 {
+			return errors.New("usage: enterlight session <id> <working|waiting|done|error|idle|off>")
+		}
+		return setSessionState(args[1], args[2], nil, false)
+	case "visible":
+		if len(args) != 3 {
+			return errors.New("usage: enterlight visible <session-id> <true|false>")
+		}
+		visible, err := strconv.ParseBool(args[2])
+		if err != nil {
+			return errors.New("visibility must be true or false")
+		}
+		return setVisibility(args[1], visible)
+	case "approval":
+		return approvalCommand(args[1:])
+	case "preset":
+		if len(args) != 2 || !enterconfig.ValidPreset(args[1]) {
+			return errors.New("usage: enterlight preset <calm|vivid|max>")
+		}
+		path, err := enterconfig.Path()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := daemon.SetPreset(ctx, args[1], true); err != nil {
+			return err
+		}
+		fmt.Printf("preset %s (%s)\n", args[1], path)
+		return nil
+	case "working", "waiting", "done", "error", "idle", "off":
 		return setState(cmd, false)
 	default:
 		return fmt.Errorf("unknown command %q; run 'enterlight help'", cmd)
@@ -101,21 +139,107 @@ func run(args []string) error {
 }
 
 func setState(state string, quiet bool) error {
+	var visible *bool
+	if strings.EqualFold(strings.TrimSpace(state), "idle") {
+		value := true
+		visible = &value
+	}
+	return setSessionState("manual", state, visible, quiet)
+}
+
+func setSessionState(sessionID, state string, visible *bool, quiet bool) error {
 	state = strings.ToLower(strings.TrimSpace(state))
 	switch state {
-	case "working", "waiting", "done", "error", "off":
+	case "working", "waiting", "done", "error", "idle", "off":
 	default:
 		return fmt.Errorf("unknown state %q", state)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := daemon.SetState(ctx, state, true); err != nil {
+	if err := daemon.SetSessionState(ctx, daemon.SetRequest{SessionID: sessionID, State: state, Visible: visible}, true); err != nil {
 		return err
 	}
 	if !quiet {
 		fmt.Println(state)
 	}
 	return nil
+}
+
+func setVisibility(sessionID string, visible bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := daemon.SetVisibility(ctx, daemon.VisibilityRequest{SessionID: sessionID, Visible: visible}, true); err != nil {
+		return err
+	}
+	fmt.Printf("%s visible=%t\n", sessionID, visible)
+	return nil
+}
+
+func approvalCommand(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: enterlight approval <set|clear> [options]")
+	}
+	action := args[0]
+	var sessionID string
+	selected := 0
+	leaseMS := 0
+	var candidates []daemon.ApprovalCandidate
+	for i := 1; i < len(args); i++ {
+		if i+1 >= len(args) {
+			return fmt.Errorf("missing value for %s", args[i])
+		}
+		name, value := args[i], args[i+1]
+		i++
+		switch name {
+		case "--session":
+			sessionID = value
+		case "--selected":
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return errors.New("--selected must be a number")
+			}
+			selected = parsed
+		case "--lease":
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return errors.New("--lease must be milliseconds")
+			}
+			leaseMS = parsed
+		case "--candidate":
+			parts := strings.SplitN(value, "=", 2)
+			if len(parts) != 2 {
+				return errors.New("--candidate must use <number>=<decision>")
+			}
+			key, err := strconv.Atoi(parts[0])
+			if err != nil {
+				return errors.New("candidate key must be a number")
+			}
+			candidates = append(candidates, daemon.ApprovalCandidate{Key: key, Decision: parts[1]})
+		default:
+			return fmt.Errorf("unknown approval option %q", name)
+		}
+	}
+	if sessionID == "" {
+		return errors.New("--session is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	switch action {
+	case "set":
+		err := daemon.SetApproval(ctx, daemon.ApprovalRequest{SessionID: sessionID, Candidates: candidates, SelectedKey: selected, LeaseMS: leaseMS}, true)
+		if err == nil {
+			fmt.Println("approval overlay set")
+		}
+		return err
+	case "clear":
+		err := daemon.ClearApproval(ctx, daemon.ApprovalClearRequest{SessionID: sessionID}, true)
+		if err == nil {
+			fmt.Println("approval overlay cleared")
+		}
+		return err
+	default:
+		return errors.New("usage: enterlight approval <set|clear> [options]")
+	}
 }
 
 func doctor() error {
@@ -170,17 +294,26 @@ func recoveryAdvice(code string) []string {
 }
 
 func printHelp() {
-	fmt.Printf(`Enterlight %s — light only the Enter key as an agent status beacon.
+	fmt.Printf(`Enterlight %s — animate a Razer keyboard as an agent status surface.
 
 Usage:
-  enterlight working           Blue, solid
+  enterlight working           Cyan/purple wave
   enterlight waiting           Amber, breathing
-  enterlight done              Green, three pulses, then restore Synapse
-  enterlight error             Red, blinking
+  enterlight done              Green/white completion burst
+  enterlight error             Red/orange warning
+  enterlight idle              Low-distraction ambient scene
   enterlight off               Restore the normal Synapse profile
 
 Commands:
   enterlight set <state>        Set a state
+  enterlight session <id> <state>
+                                Set one of up to four displayed sessions
+  enterlight visible <id> <bool>
+                                Control whether an idle session is visible
+  enterlight preset <name>      Persist calm, vivid, or max presentation
+  enterlight approval set --session <id> --selected <n>
+      --candidate <n>=<allow_once|allow_session|decline|cancel> [...]
+  enterlight approval clear --session <id>
   enterlight status             Show daemon status
   enterlight doctor             Check the Razer Chroma SDK
   enterlight install-codex      Add lifecycle hooks to ~/.codex/hooks.json
