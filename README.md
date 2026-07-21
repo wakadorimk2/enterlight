@@ -70,9 +70,20 @@ chmod +x enterlight-linux-amd64 install-wsl.sh
 codex --version
 ```
 
-The installer resolves and records the existing Codex executable before installing a managed `~/.local/bin/codex` shim. It stops without changing anything if `~/.local/bin` is not already on `PATH`, Codex is not exactly version 0.144.6, the shim path contains a non-Enterlight file, either executable cannot be resolved, or the paths would recurse. It does not edit shell startup files or Codex settings.
+The installer resolves and records the existing Codex executable before installing a managed `~/.local/bin/codex` shim. It stops without changing anything if `~/.local/bin` is not already on `PATH`, Codex is not exactly version 0.144.6, the shim path contains a non-Enterlight file, either executable cannot be resolved, or the paths would recurse. By default, it does not edit shell startup files or Codex settings.
 
-To uninstall only the WSL helper, shim, and recorded executable paths:
+Codex lifecycle hooks are optional. To install them for both WSL and Windows when the same `hooks.json` is shared, add the explicit opt-in flag:
+
+```bash
+./install-wsl.sh \
+  --helper "$PWD/enterlight-linux-amd64" \
+  --windows-exe /mnt/c/path/to/enterlight.exe \
+  --install-codex-hooks
+```
+
+The opt-in safely merges only Enterlight handlers into `~/.codex/hooks.json`, preserves unrelated hooks, and backs up an existing file as `hooks.json.bak`. WSL hooks call a managed wrapper while `commandWindows` continues to call the Windows Enterlight executable directly. Notifications are best effort: the wrapper accepts only the five lifecycle states, stays silent if Windows interop or Enterlight fails, and uses a three-second process timeout so it returns before Codex's five-second hook timeout. Re-running the installer is safe; installing without the flag leaves hook files and hook ownership unchanged.
+
+To uninstall the WSL adapter and any lifecycle hooks that this installer recorded as managed:
 
 ```bash
 ./uninstall-wsl.sh

@@ -5,9 +5,10 @@ supported_version="0.144.6"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 helper_source="${ENTERLIGHT_WSL_HELPER:-$script_dir/../dist/enterlight-linux-amd64}"
 windows_binary="${ENTERLIGHT_WINDOWS_EXE:-}"
+install_codex_hooks=false
 
 usage() {
-  echo "usage: scripts/install-wsl.sh [--helper PATH] [--windows-exe PATH]" >&2
+  echo "usage: scripts/install-wsl.sh [--helper PATH] [--windows-exe PATH] [--install-codex-hooks]" >&2
 }
 
 while (($#)); do
@@ -21,6 +22,10 @@ while (($#)); do
       [[ $# -ge 2 ]] || { usage; exit 2; }
       windows_binary="$2"
       shift 2
+      ;;
+    --install-codex-hooks)
+      install_codex_hooks=true
+      shift
       ;;
     *)
       usage
@@ -118,9 +123,19 @@ fi
 
 helper_dir="$HOME/.local/lib/enterlight"
 helper_path="$helper_dir/enterlight-linux-amd64"
+hook_wrapper="$helper_dir/codex-hook-wsl"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/enterlight"
 config_path="$config_dir/wsl.json"
+hooks_path="$HOME/.codex/hooks.json"
+hook_marker="# Managed by Enterlight WSL Codex lifecycle hooks"
 mkdir -p -- "$bin_dir" "$helper_dir" "$config_dir"
+
+if $install_codex_hooks && [[ -e "$hook_wrapper" || -L "$hook_wrapper" ]]; then
+  if [[ ! -f "$hook_wrapper" ]] || ! head -n 2 -- "$hook_wrapper" | grep -Fqx "$hook_marker"; then
+    echo "Refusing to overwrite existing non-Enterlight file: $hook_wrapper" >&2
+    exit 1
+  fi
+fi
 
 install -m 0755 -- "$helper_source" "$helper_path"
 
@@ -133,11 +148,31 @@ json_escape() {
 
 config_tmp="$(mktemp "$config_dir/.wsl.json.XXXXXX")"
 shim_tmp="$(mktemp "$bin_dir/.codex.XXXXXX")"
-cleanup() { rm -f -- "$config_tmp" "$shim_tmp"; }
+hook_tmp="$(mktemp "$helper_dir/.codex-hook-wsl.XXXXXX")"
+cleanup() { rm -f -- "$config_tmp" "$shim_tmp" "$hook_tmp"; }
 trap cleanup EXIT
 
-printf '{\n  "codexPath": "%s",\n  "codexVersion": "%s",\n  "windowsBinary": "%s"\n}\n' \
-  "$(json_escape "$codex_path")" "$supported_version" "$(json_escape "$windows_binary")" >"$config_tmp"
+hooks_managed=false
+if $install_codex_hooks || { [[ -f "$config_path" ]] && grep -Eq '"codexHooksManaged"[[:space:]]*:[[:space:]]*true' "$config_path"; }; then
+  hooks_managed=true
+fi
+
+if $hooks_managed; then
+  printf '{\n  "codexPath": "%s",\n  "codexVersion": "%s",\n  "windowsBinary": "%s",\n  "codexHooksManaged": true\n}\n' \
+    "$(json_escape "$codex_path")" "$supported_version" "$(json_escape "$windows_binary")" >"$config_tmp"
+else
+  printf '{\n  "codexPath": "%s",\n  "codexVersion": "%s",\n  "windowsBinary": "%s"\n}\n' \
+    "$(json_escape "$codex_path")" "$supported_version" "$(json_escape "$windows_binary")" >"$config_tmp"
+fi
+
+if $install_codex_hooks; then
+  windows_command="$(wslpath -w -- "$windows_binary")"
+  printf '#!/usr/bin/env bash\n%s\nset -u\n\nif (($# != 1)); then\n  exit 2\nfi\ncase "$1" in\n  working|waiting|done|error|off) state="$1" ;;\n  *) exit 2 ;;\nesac\n\nwindows_binary=%q\n/usr/bin/timeout --kill-after=1s 3s powershell.exe -NoProfile -NonInteractive -Command '\''& $args[0] codex-hook $args[1]'\'' "$windows_binary" "$state" </dev/null >/dev/null 2>&1 || true\nexit 0\n' \
+    "$hook_marker" "$windows_command" >"$hook_tmp"
+  install -m 0755 -- "$hook_tmp" "$hook_wrapper"
+  ENTERLIGHT_WSL_INTERNAL_MANAGE_HOOKS=1 "$helper_path" install-codex-hooks "$hooks_path" "$hook_wrapper" "$windows_command"
+fi
+
 install -m 0600 -- "$config_tmp" "$config_path"
 
 printf '#!/usr/bin/env sh\n%s\nexec "%s" "$@"\n' "$marker" "$helper_path" >"$shim_tmp"

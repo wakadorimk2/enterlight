@@ -16,42 +16,64 @@ func Install(executable string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".codex")
-	path := filepath.Join(dir, "hooks.json")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	path := filepath.Join(home, ".codex", "hooks.json")
+	commandBase := quoteCommand(executable) + " codex-hook "
+	commandWindowsBase := ""
+	if runtime.GOOS == "windows" {
+		commandWindowsBase = commandBase
+	}
+	if err := installAt(path, commandBase, commandWindowsBase, true); err != nil {
 		return "", err
+	}
+	return path, nil
+}
+
+// InstallAt replaces only Enterlight lifecycle handlers in a Codex hooks file.
+// commandBase and commandWindowsBase must include the trailing space before the
+// lifecycle state.
+func InstallAt(path, commandBase, commandWindowsBase string) error {
+	return installAt(path, commandBase, commandWindowsBase, false)
+}
+
+func installAt(path, commandBase, commandWindowsBase string, setDescription bool) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
 	}
 
 	root := hookFile{}
 	if data, err := os.ReadFile(path); err == nil {
 		if len(data) > 0 {
 			if err := json.Unmarshal(data, &root); err != nil {
-				return "", fmt.Errorf("parse %s: %w", path, err)
+				return fmt.Errorf("parse %s: %w", path, err)
 			}
 		}
-		_ = os.WriteFile(path+".bak", data, 0o644)
+		if err := os.WriteFile(path+".bak", data, 0o644); err != nil {
+			return fmt.Errorf("back up %s: %w", path, err)
+		}
 	} else if !os.IsNotExist(err) {
-		return "", err
+		return err
 	}
 
 	removeEnterlightHooks(root)
 	hooks := ensureMap(root, "hooks")
-	commandBase := quoteCommand(executable) + " codex-hook "
-	appendHook(hooks, "UserPromptSubmit", commandBase+"working", "Enterlight: working")
-	appendHook(hooks, "PreToolUse", commandBase+"working", "Enterlight: working")
-	appendHook(hooks, "PermissionRequest", commandBase+"waiting", "Enterlight: waiting")
-	appendHook(hooks, "Stop", commandBase+"done", "Enterlight: done")
+	appendHook(hooks, "UserPromptSubmit", commandBase+"working", commandWithState(commandWindowsBase, "working"), "Enterlight: working")
+	appendHook(hooks, "PreToolUse", commandBase+"working", commandWithState(commandWindowsBase, "working"), "Enterlight: working")
+	appendHook(hooks, "PermissionRequest", commandBase+"waiting", commandWithState(commandWindowsBase, "waiting"), "Enterlight: waiting")
+	appendHook(hooks, "Stop", commandBase+"done", commandWithState(commandWindowsBase, "done"), "Enterlight: done")
 
-	root["description"] = "Local lifecycle hooks, including Enterlight agent status lighting."
+	if setDescription {
+		root["description"] = "Local lifecycle hooks, including Enterlight agent status lighting."
+	}
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return "", err
+		return err
 	}
 	data = append(data, '\n')
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return "", err
+		return err
 	}
-	return path, nil
+	return nil
 }
 
 func Uninstall() (string, error) {
@@ -60,21 +82,26 @@ func Uninstall() (string, error) {
 		return "", err
 	}
 	path := filepath.Join(home, ".codex", "hooks.json")
+	return path, UninstallAt(path)
+}
+
+// UninstallAt removes only Enterlight lifecycle handlers from a Codex hooks file.
+func UninstallAt(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return err
 	}
 	root := hookFile{}
 	if err := json.Unmarshal(data, &root); err != nil {
-		return "", err
+		return err
 	}
 	removeEnterlightHooks(root)
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return "", err
+		return err
 	}
 	out = append(out, '\n')
-	return path, os.WriteFile(path, out, 0o644)
+	return os.WriteFile(path, out, 0o644)
 }
 
 func removeEnterlightHooks(root hookFile) {
@@ -116,19 +143,26 @@ func ensureMap(root map[string]any, key string) map[string]any {
 	return value
 }
 
-func appendHook(hooks map[string]any, event, command, status string) {
+func appendHook(hooks map[string]any, event, command, commandWindows, status string) {
 	handler := map[string]any{
 		"type":          "command",
 		"command":       command,
 		"timeout":       5,
 		"statusMessage": status,
 	}
-	if runtime.GOOS == "windows" {
-		handler["commandWindows"] = command
+	if commandWindows != "" {
+		handler["commandWindows"] = commandWindows
 	}
 	group := map[string]any{"hooks": []any{handler}}
 	existing, _ := hooks[event].([]any)
 	hooks[event] = append(existing, group)
+}
+
+func commandWithState(base, state string) string {
+	if base == "" {
+		return ""
+	}
+	return base + state
 }
 
 func quoteCommand(path string) string {
