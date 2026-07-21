@@ -11,9 +11,10 @@ import (
 const SupportedCodexVersion = "0.144.6"
 
 type Config struct {
-	CodexPath     string `json:"codexPath"`
-	CodexVersion  string `json:"codexVersion"`
-	WindowsBinary string `json:"windowsBinary"`
+	CodexPath         string `json:"codexPath"`
+	CodexVersion      string `json:"codexVersion"`
+	WindowsBinary     string `json:"windowsBinary"`
+	CodexHooksManaged bool   `json:"codexHooksManaged,omitempty"`
 }
 
 func DefaultConfigPath() (string, error) {
