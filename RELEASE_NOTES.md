@@ -1,3 +1,9 @@
+# Enterlight v0.2.1
+
+Enterlight's WSL installer can now opt in to Codex lifecycle hooks with `--install-codex-hooks`. The installer preserves unrelated hooks, records ownership for selective uninstall, and keeps the Windows command available when `hooks.json` is shared across WSL and Windows.
+
+WSL lifecycle notifications are best effort: a managed wrapper validates the five supported states, stays silent when Windows interop or Enterlight fails, and returns before Codex's five-second hook timeout. This prevents notification failures such as exit code 126 from interrupting Codex tool use.
+
 # Enterlight v0.2.0
 
 Enterlight can now use the whole keyboard as an animated Codex status surface. Concurrent sessions occupy up to four horizontal lanes, and calm, vivid, and max presets vary the presentation without changing state meanings.

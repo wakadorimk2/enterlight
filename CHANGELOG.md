@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.2.1 — 2026-07-22
+
+- Add opt-in WSL Codex lifecycle hooks that return successfully when Windows notifications fail or time out.
+- Preserve unrelated hooks and remove only installer-managed Enterlight handlers during uninstall.
+
 ## v0.2.0 — 2026-07-20
 
 - Animate full-keyboard working, waiting, completed, error, and visibility-aware idle scenes.
